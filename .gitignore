@@ -1,0 +1,11 @@
+@"
+.env
+__pycache__/
+*.pyc
+.faiss_index/
+.cache/
+reports/
+.venv/
+*.pdf
+*.json
+"@ | Set-Content .gitignore -Encoding UTF8
