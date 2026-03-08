@@ -2,6 +2,9 @@
 
 An AI-powered personalized code review system that analyzes your GitHub repository to extract your unique coding "fingerprint," then reviews new code against your personal patterns — not generic rules.
 
+## Live Demo
+🔗 **[Try it live](https://code-review-agent-v10.streamlit.app/)** → https://code-review-agent-v10.streamlit.app/
+
 ## What Makes This Different
 
 Most code review tools flag violations of universal rules. This agent learns **your** coding DNA first:
