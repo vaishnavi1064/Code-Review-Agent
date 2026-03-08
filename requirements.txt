@@ -1,0 +1,11 @@
+﻿groq
+google-genai
+faiss-cpu
+numpy
+PyGithub
+python-dotenv
+pydantic
+streamlit
+reportlab
+pillow
+json-repair
