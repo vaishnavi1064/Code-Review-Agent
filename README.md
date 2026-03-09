@@ -3,7 +3,7 @@
 An AI-powered **multi-agent code review system** that learns your team's coding "DNA" across multiple repositories, then reviews new code with **asynchronous parallel processing** — delivering enterprise-grade feedback in seconds, not minutes.
 
 ## 🚀 Live Demo
-🔗 **[Try it live](https://code-review-agent-v10.streamlit.app/)** → https://code-review-agent-v10.streamlit.app/
+🔗 **[Try it live]([https://code-review-agent-v10.streamlit.app/](https://code-review-agent-v10.streamlit.app/))** → https://code-review-agent-v10.streamlit.app/
 
 ---
 
