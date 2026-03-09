@@ -1,8 +1,9 @@
-﻿import os
+import os
 import re
 import json
+import asyncio
 from typing import List
-from groq import Groq
+from groq import Groq, AsyncGroq
 from dotenv import load_dotenv
 from src.models import (
     RepoPattern, CodeReviewResult, ReviewIssue,
@@ -206,32 +207,66 @@ def review_code(
     code: str,
     repo_url: str,
     pattern: RepoPattern,
+    log_callback=None,
 ) -> CodeReviewResult:
-    client = Groq(api_key=os.getenv('GROQ_API_KEY'))
+    """
+    Synchronous wrapper around the asynchronous review pipeline.
+    Keeps the public API unchanged for callers like the Streamlit app.
+    """
+    return asyncio.run(
+        review_code_async(
+            code=code,
+            repo_url=repo_url,
+            pattern=pattern,
+            log_callback=log_callback,
+        )
+    )
+
+
+async def review_code_async(
+    code: str,
+    repo_url: str,
+    pattern: RepoPattern,
+    log_callback=None,
+) -> CodeReviewResult:
+    """
+    Asynchronous review that fires LLM calls for each function concurrently.
+    """
+    client = AsyncGroq(api_key=os.getenv('GROQ_API_KEY'))
     language = _detect_language(code)
     functions = _split_into_functions(code, language)
 
-    all_issues = []
-    all_scores = []
-    all_summaries = []
+    if log_callback:
+        log_callback(f"Spawning {len(functions)} specialized Review Agents...", "INFO")
 
-    for func_chunk in functions:
+    async def review_chunk(func_chunk: str, index: int) -> CodeReviewResult:
+        if log_callback:
+            log_callback(f"Agent-{index + 1}: Analyzing logic block...", "INFO")
+
         similar = search_similar(func_chunk, repo_url, top_k=3)
         prompt = _build_prompt(func_chunk, pattern, similar, language)
-        response = client.chat.completions.create(
+
+        response = await client.chat.completions.create(
             model=GROQ_MODEL,
-            messages=[{'role': 'user', 'content': prompt}],
+            messages=[{"role": "user", "content": prompt}],
             max_tokens=MAX_TOKENS,
             temperature=0.1,
         )
-        response_text = response.choices[0].message.content
-        result = _parse_review(response_text, language)
-        all_issues.extend(result.issues)
-        all_scores.append(result.score)
-        all_summaries.append(result.summary)
+        return _parse_review(response.choices[0].message.content, language)
+
+    tasks = [review_chunk(chunk, i) for i, chunk in enumerate(functions)]
+    results = await asyncio.gather(*tasks)
+
+    all_issues: List[ReviewIssue] = []
+    all_scores: List[int] = []
+    all_summaries: List[str] = []
+
+    for res in results:
+        all_issues.extend(res.issues)
+        all_scores.append(res.score)
+        all_summaries.append(res.summary)
 
     final_score = round(sum(all_scores) / len(all_scores)) if all_scores else 70
-    final_summary = ' '.join(all_summaries) if all_summaries else 'Review complete.'
 
     return CodeReviewResult(
         total_issues=len(all_issues),
@@ -240,6 +275,6 @@ def review_code(
         suggestion_count=sum(1 for i in all_issues if i.severity == Severity.SUGGESTION),
         score=final_score,
         issues=all_issues,
-        summary=final_summary,
+        summary=" ".join(all_summaries) if all_summaries else "Review complete.",
         detected_language=language,
     )
