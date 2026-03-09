@@ -136,8 +136,18 @@ left_pane, right_pane = st.columns([1, 1], gap="medium")
 
 with left_pane:
     st.subheader("Source Input")
-    repo_url = st.text_input("GITHUB_REPOSITORY_URL", placeholder="https://github.com/org/repo", key="repo_input")
-    raw_code = st.text_area("SCRATCHPAD_BUFFER", height=450, placeholder="// Paste code snippet to review against repo patterns...", key="code_input")
+    repos_input = st.text_area(
+        "GITHUB_REPOSITORY_URLS",
+        height=100,
+        placeholder="https://github.com/org/repo-one\nhttps://github.com/org/repo-two",
+        key="repo_input",
+    )
+    raw_code = st.text_area(
+        "SCRATCHPAD_BUFFER",
+        height=380,
+        placeholder="// Paste code snippet to review against aggregated repo patterns...",
+        key="code_input",
+    )
     analyze_btn = st.button("RUN_DIAGNOSTICS", use_container_width=True, type="primary")
 
 with right_pane:
@@ -149,52 +159,90 @@ with right_pane:
 
 # --- ORCHESTRATION LOGIC ---
 if analyze_btn:
-    repo_url = (repo_url or "").strip()
+    raw_repos = (repos_input or "").strip()
     raw_code = (raw_code or "").strip()
 
-    if not repo_url:
-        feedback_container.error("Please enter a GitHub repository URL.")
-        log_terminal("Aborted: missing GITHUB_REPOSITORY_URL", "ERROR")
+    repo_urls = [u.strip() for u in raw_repos.splitlines() if u.strip()]
+
+    if not repo_urls:
+        feedback_container.error("Please enter at least one GitHub repository URL (one per line).")
+        log_terminal("Aborted: missing GITHUB_REPOSITORY_URLS", "ERROR")
     elif not raw_code:
         feedback_container.error("Please paste code in SCRATCHPAD_BUFFER to review.")
         log_terminal("Aborted: missing code in scratchpad", "ERROR")
     else:
         with st.status("Initializing Analysis Pipeline...", expanded=True) as status:
             try:
-                # Step 1: Ingest
-                log_terminal("Initializing IngestConfig...")
-                config = IngestConfig(repo_url=repo_url)
-                log_terminal(f"Ingesting repository: {repo_url}")
-                cached = load_cache(repo_url)
-                if cached:
-                    pattern = cached[0] if isinstance(cached, tuple) else cached
-                    log_terminal("Loaded pattern from cache.")
+                # Step 1: Ingest (single-repo vs multi-repo)
+                if len(repo_urls) == 1:
+                    repo_url = repo_urls[0]
+                    log_terminal("Single-repo mode: initializing IngestConfig...")
+                    config = IngestConfig(repo_url=repo_url)
+                    log_terminal(f"Ingesting repository: {repo_url}")
+                    cached = load_cache(repo_url)
+                    if cached:
+                        pattern = cached[0] if isinstance(cached, tuple) else cached
+                        log_terminal("Loaded pattern from cache.")
+                        files = None
+                    else:
+                        files, skipped = ingest_repo(config)
+                        if not files:
+                            log_terminal("No supported code files found.", "ERROR")
+                            status.update(label="No files found", state="error")
+                            st.stop()
+                        repo_name_str = extract_repo_name(repo_url)
+                        status.update(label="Scanning Patterns...", state="running")
+                        log_terminal("Running pattern_extractor...")
+                        pattern = extract_patterns(files, repo_url, repo_name_str)
+                        log_terminal("Building vector index...")
+                        build_index(files, repo_url)
+                        file_paths = [f[0] for f in files]
+                        save_cache(repo_url, pattern, file_paths)
+                        log_terminal(f"Analyzed {len(files)} files.")
+
+                    st.session_state.pattern = pattern
+                    st.session_state.repo_url = repo_url
+                    repo_id_for_index = repo_url
+                    repo_name_for_report = extract_repo_name(repo_url)
                 else:
-                    files, skipped = ingest_repo(config)
-                    if not files:
-                        log_terminal("No supported code files found.", "ERROR")
+                    log_terminal(f"Multi-repo mode: {len(repo_urls)} repositories", "INFO")
+                    all_files = []
+                    for url in repo_urls:
+                        log_terminal(f"Ingesting repository: {url}")
+                        config = IngestConfig(repo_url=url)
+                        files, skipped = ingest_repo(config)
+                        if not files:
+                            log_terminal(f"No supported code files found in {url}", "ERROR")
+                        all_files.extend(files)
+
+                    if not all_files:
+                        log_terminal("No supported code files found across all repositories.", "ERROR")
                         status.update(label="No files found", state="error")
                         st.stop()
-                    repo_name_str = extract_repo_name(repo_url)
-                    status.update(label="Scanning Patterns...", state="running")
-                    log_terminal("Running pattern_extractor...")
-                    pattern = extract_patterns(files, repo_url, repo_name_str)
-                    log_terminal("Building vector index...")
-                    build_index(files, repo_url)
-                    file_paths = [f[0] for f in files]
-                    save_cache(repo_url, pattern, file_paths)
-                    log_terminal(f"Analyzed {len(files)} files.")
 
-                st.session_state.pattern = pattern
-                st.session_state.repo_url = repo_url
+                    aggregate_id = "multi::" + "||".join(sorted(repo_urls))
+                    display_name = f"{len(repo_urls)} repos"
+
+                    status.update(label="Scanning Patterns...", state="running")
+                    log_terminal("Running pattern_extractor across all repositories...")
+                    pattern = extract_patterns(all_files, aggregate_id, display_name)
+
+                    log_terminal("Building vector index across all repositories...")
+                    build_index(all_files, aggregate_id)
+                    log_terminal(f"Analyzed {len(all_files)} files across all repositories.")
+
+                    st.session_state.pattern = pattern
+                    st.session_state.repo_url = aggregate_id
+                    repo_id_for_index = aggregate_id
+                    repo_name_for_report = display_name
 
                 status.update(label="Orchestrating Multi-Agent Review...", state="running")
                 log_terminal("Initializing Async Review Pipeline...", "INFO")
                 review_result = asyncio.run(
                     review_code_async(
                         code=raw_code,
-                        repo_url=repo_url,
-                        pattern=pattern,
+                        repo_url=repo_id_for_index,
+                        pattern=st.session_state.pattern,
                         log_callback=log_terminal,
                     )
                 )
@@ -203,10 +251,9 @@ if analyze_btn:
                 log_terminal("All agents reported back successfully.", "INFO")
 
                 st.session_state.review_result = review_result
-                repo_name = extract_repo_name(repo_url)
                 paths = generate_report(
                     result=review_result,
-                    repo_name=repo_name,
+                    repo_name=repo_name_for_report,
                     output_dir="reports",
                     export_pdf=True,
                     export_json=True,
