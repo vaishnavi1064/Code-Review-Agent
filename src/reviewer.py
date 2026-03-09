@@ -191,14 +191,27 @@ def _parse_review(response_text: str, language: SupportedLanguage) -> CodeReview
         except Exception:
             continue
 
+    # Normalize inconsistent LLM outputs:
+    # - If there are no issues but the score is < 100, treat it as a failure
+    #   (likely parsing error or language mismatch) instead of silently
+    #   reporting "no issues" with a low score.
+    score = max(0, min(100, int(data.get('score', 70))))
+    summary = data.get('summary', '')
+    if not issues and score < 100:
+        summary = (
+            "Language mismatch or parsing error detected. "
+            "Please confirm the submitted code matches the analyzed repository language and structure."
+        )
+        score = 0
+
     return CodeReviewResult(
         total_issues=len(issues),
         critical_count=sum(1 for i in issues if i.severity == Severity.CRITICAL),
         warning_count=sum(1 for i in issues if i.severity == Severity.WARNING),
         suggestion_count=sum(1 for i in issues if i.severity == Severity.SUGGESTION),
-        score=max(0, min(100, int(data.get('score', 70)))),
+        score=score,
         issues=issues,
-        summary=data.get('summary', ''),
+        summary=summary,
         detected_language=language,
     )
 
